@@ -1,0 +1,14 @@
+{
+  "name": "skapi-template",
+  "version": "1.0.0",
+  "description": "",
+  "main": "service.js",
+  "scripts": {
+    "dev": "npx bns port=4000"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "basic-node-server": "^1.1.1"
+  }
+}

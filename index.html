@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <!-- skapi.js is the Skapi library. service.js creates the skapi object every page uses. -->
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <main>
+        <h1>Skapi HTML Template</h1>
+        <p>
+            This is a plain HTML template that shows what you can build with Skapi, and how.
+            Each page below demonstrates one feature with a short description and a working example.
+            Open a page, try it, then view the page source to see how it is done.
+        </p>
+        <p>
+            Database, Realtime Chat, RTC Video Chat and Shared Drawing need a logged in user.
+            They take you to the login page and bring you back afterwards.
+        </p>
+
+        <nav class="menu" aria-label="Features">
+            <ul>
+                <li>
+                    <a href="account.html">User Account</a>
+                    <p>Sign up, log in, verify an email address, reset or change a password, update a profile, remove and recover an account.</p>
+                </li>
+                <li>
+                    <a href="newsletter.html">Newsletter</a>
+                    <p>Let visitors subscribe to your newsletter with their email address.</p>
+                </li>
+                <li>
+                    <a href="inquiry.html">Send Inquiry</a>
+                    <p>A contact form that sends a message to you, the project owner.</p>
+                </li>
+                <li>
+                    <a href="database.html">Database</a>
+                    <p>A photo gallery: upload posts with files, like, comment, subscribe to other users and query posts in different ways.</p>
+                </li>
+                <li>
+                    <a href="realtime.html">Realtime Chat</a>
+                    <p>Group chat and private messages over a WebSocket connection.</p>
+                </li>
+                <li>
+                    <a href="webrtc.html">RTC Video Chat</a>
+                    <p>Video calls, screen sharing and a data channel between two users with WebRTC.</p>
+                </li>
+                <li>
+                    <a href="drawing.html">Shared Drawing</a>
+                    <p>Two users draw on one canvas; every stroke travels over a WebRTC data channel.</p>
+                </li>
+            </ul>
+        </nav>
+    </main>
+</body>
+
+</html>

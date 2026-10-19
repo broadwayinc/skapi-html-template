@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Newsletter | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li aria-current="page">Newsletter</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Newsletter</h1>
+        <p>
+            Visitors can subscribe to your newsletter without an account. <code>skapi.subscribeNewsletter()</code>
+            takes the email address and the newsletter group. The group <code>public</code> is the newsletter for
+            everyone; you write and send the newsletters from your project's page at www.skapi.com.
+        </p>
+        <p>
+            The form below is passed straight to the method: the <code>name</code> of each field is the name of the
+            parameter.
+        </p>
+
+        <form onsubmit="subscribeToNewsletter(event)">
+            <label>
+                Email address
+                <input type="email" name="email" placeholder="your@email.com" required>
+            </label>
+            <input type="hidden" name="group" value="public">
+            <button type="submit">Subscribe</button>
+        </form>
+        <p id="newsletterStatus" role="status" aria-live="polite"></p>
+    </main>
+
+    <script>
+        async function subscribeToNewsletter(event) {
+            event.preventDefault();
+            let form = event.target;
+            let status = document.getElementById("newsletterStatus");
+            let button = form.querySelector("button");
+
+            button.disabled = true;
+            status.textContent = "Submitting...";
+
+            try {
+                /*
+                    The submit event is passed to the method.
+                    Skapi reads the form fields (email and group) from it.
+                    The method resolves to a message that can be shown to the visitor.
+                */
+                status.textContent = await skapi.subscribeNewsletter(event);
+                form.reset();
+            } catch (err) {
+                status.textContent = err.message;
+            } finally {
+                button.disabled = false;
+            }
+        }
+    </script>
+</body>
+
+</html>

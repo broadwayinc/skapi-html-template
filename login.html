@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Login | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="account.html">User Account</a></li>
+                <li aria-current="page">Login</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Login</h1>
+        <p>
+            <code>skapi.login()</code> signs the user in with their email address and password.
+            The form's <code>action</code> is the page Skapi opens after a successful login.
+        </p>
+
+        <form id="loginForm" action="account.html" onsubmit="login(event)">
+            <label>
+                Email address
+                <input type="email" name="email" placeholder="your@email.com" required>
+            </label>
+            <label>
+                Password
+                <input type="password" name="password" minlength="6" placeholder="At least 6 characters" required>
+            </label>
+            <button type="submit">Login</button>
+        </form>
+
+        <p>
+            <a href="signup.html">Don't have an account?</a> | <a href="forgot-password.html">Forgot password?</a>
+        </p>
+    </main>
+
+    <script>
+        /*
+            Where to go after the login.
+            A page that needs a logged in user sends the visitor here with its name in the ?to= parameter,
+            so the visitor is taken back there. Otherwise the account page is opened.
+            Only names of pages in this template are accepted.
+        */
+        let destination = new URLSearchParams(location.search).get("to");
+        if (!/^[a-z-]+\.html(#.*)?$/.test(destination || "")) {
+            destination = "account.html";
+        }
+        document.getElementById("loginForm").action = pageUrl(destination);
+
+        // A user who is already logged in is sent on right away.
+        userReady.then((user) => {
+            if (user) {
+                location.replace(pageUrl(destination));
+            }
+        });
+
+        async function login(event) {
+            try {
+                // On success Skapi redirects to the form's action.
+                await skapi.login(event);
+            } catch (err) {
+                if (err.code === "USER_IS_DISABLED") {
+                    /*
+                        The account has been removed.
+                        skapi.recoverAccount() sends a recovery email to the account that just failed to log in.
+                        The argument is the page the link in the email opens once the account is enabled again.
+                    */
+                    if (confirm("This account has been removed. Send a recovery email?")) {
+                        try {
+                            await skapi.recoverAccount(pageUrl("login.html"));
+                            location.href = pageUrl("recover-account.html?sent=1");
+                        } catch (recoverErr) {
+                            alert(recoverErr.message);
+                        }
+                    }
+                    return;
+                }
+                alert(err.message);
+            }
+        }
+    </script>
+</body>
+
+</html>

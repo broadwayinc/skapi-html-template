@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>User Account | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li aria-current="page">User Account</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>User Account</h1>
+        <p>
+            Skapi comes with a complete user account system: sign up, log in, email verification, password reset and
+            profile management. Nothing has to be built on a server. Every feature below is one method call on the
+            skapi object, usually with a plain HTML form as its argument.
+        </p>
+
+        <!-- Shows who is logged in. The text is filled in by the script at the bottom of the page. -->
+        <p id="loginStatus" role="status" aria-live="polite"></p>
+
+        <section>
+            <h2>Login or Sign up</h2>
+            <p>
+                <code>skapi.signup()</code> creates an account from an email address and a password, and
+                <code>skapi.login()</code> signs the user in. The session is kept by the browser, so with the
+                <code>autoLogin</code> option the user is logged in again on their next visit.
+            </p>
+            <p>
+                <a href="login.html">Login</a> | <a href="signup.html">Sign up</a>
+            </p>
+        </section>
+
+        <section>
+            <h2>Signup email verification</h2>
+            <p>
+                When an account is created with the <code>signup_confirmation</code> option, Skapi sends a confirmation
+                email and the user can only log in after clicking the link in it. A logged in user can also verify
+                their email address later with <code>skapi.verifyEmail()</code>, which sends a 6 digit code.
+                A verified email address is needed to reset a forgotten password and to recover a removed account.
+            </p>
+            <p>
+                <a href="signup.html">Sign up</a> | <a href="email-verification.html">Verify email</a>
+            </p>
+        </section>
+
+        <section>
+            <h2>Forgot password</h2>
+            <p>
+                <code>skapi.forgotPassword()</code> sends a 6 digit code to the account's verified email address, and
+                <code>skapi.resetPassword()</code> sets a new password with that code.
+            </p>
+            <p>
+                <a href="forgot-password.html">Forgot password</a>
+            </p>
+        </section>
+
+        <section>
+            <h2>Change password</h2>
+            <p>
+                A logged in user changes their password with <code>skapi.changePassword()</code> by giving the current
+                password and the new one.
+            </p>
+            <p>
+                <a href="change-password.html">Change password</a>
+            </p>
+        </section>
+
+        <section>
+            <h2>Update account profile</h2>
+            <p>
+                <code>skapi.updateProfile()</code> changes the user's name, birthdate, email address and whether the
+                email address is visible to other users.
+            </p>
+            <p>
+                <a href="update-profile.html">Update profile</a>
+            </p>
+        </section>
+
+        <section>
+            <h2>Remove account</h2>
+            <p>
+                <code>skapi.disableAccount()</code> removes the logged in user's account. The account is disabled
+                rather than deleted right away, so it can still be recovered for a while.
+            </p>
+            <p>
+                <a href="remove-account.html">Remove account</a>
+            </p>
+        </section>
+
+        <section>
+            <h2>Recover account</h2>
+            <p>
+                When a removed account tries to log in, the login fails with the error code
+                <code>USER_IS_DISABLED</code>. <code>skapi.recoverAccount()</code> then sends a recovery email to the
+                account's verified email address, and the link in it enables the account again.
+            </p>
+            <p>
+                <a href="recover-account.html">Recover account</a>
+            </p>
+        </section>
+    </main>
+
+    <script>
+        /*
+            userReady (from service.js) resolves to the logged in user's profile, or null.
+            Show who is logged in, with a logout button.
+        */
+        userReady.then((user) => {
+            let status = document.getElementById("loginStatus");
+            if (!user) {
+                status.textContent = "You are not logged in.";
+                return;
+            }
+
+            status.textContent = `You are logged in as ${user.name || user.email || user.user_id}. `;
+
+            let logoutButton = document.createElement("button");
+            logoutButton.type = "button";
+            logoutButton.textContent = "Logout";
+            logoutButton.onclick = () => {
+                /*
+                    skapi.logout() ends the session.
+                    The page is reloaded afterwards so the status line is updated.
+                */
+                skapi.logout().then(() => location.reload()).catch((err) => alert(err.message));
+            };
+            status.appendChild(logoutButton);
+        });
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Database | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li aria-current="page">Database</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Database</h1>
+        <p>
+            A photo gallery built on the Skapi database. Every post is a record in the table <code>posts</code>
+            with an image file, a description and tags. The page shows how records are uploaded with files, queried
+            in different orders and connected to each other:
+        </p>
+        <ul>
+            <li>Posts are uploaded with <code>skapi.postRecord()</code> and fetched with <code>skapi.getRecords()</code>, four at a time.</li>
+            <li>A private post is uploaded to the access group <code>private</code>, so only its uploader can read it.</li>
+            <li>A like is a record in the table <code>likes</code> that references the post. The reference count of a post is its number of likes.</li>
+            <li>A comment is a record in the table <code>comments</code> with the compound index name <code>comment.&lt;record_id&gt;</code>, which is also what "Most commented" is ordered by.</li>
+            <li>Subscribing to an uploader adds their posts to your feed, fetched with <code>skapi.getFeed()</code>.</li>
+        </ul>
+
+        <!-- This page needs a logged in user (see LOGIN_REQUIRED in service.js). -->
+
+        <section>
+            <h2>Post a photo</h2>
+            <form id="postForm" onsubmit="postPhoto(event)">
+                <label>
+                    Photo
+                    <input type="file" id="input_fileInput" name="pic" accept="image/*" required>
+                </label>
+                <img id="img_preview" alt="Preview of the selected photo" hidden>
+                <label>
+                    Description
+                    <input type="text" name="description" placeholder="Describe the photo" required>
+                </label>
+                <label>
+                    Tags (optional)
+                    <input type="text" id="input_tags" placeholder="tag1, tag2, ...">
+                </label>
+                <label>
+                    <input type="checkbox" id="input_private" name="private" value="private">
+                    Private post (only you can see it)
+                </label>
+                <button type="submit" id="postButton">Post</button>
+            </form>
+        </section>
+
+        <section>
+            <h2>Posts</h2>
+            <!--
+                The links change the URL hash, and the hash decides how the posts are fetched.
+                See initialFetch() at the bottom of the page.
+            -->
+            <nav aria-label="Post filters">
+                <p>
+                    <a href="database.html">Most recent</a> |
+                    <a href="#mostliked">Most liked</a> |
+                    <a href="#mostcomment">Most commented</a> |
+                    <a href="#myposts">My posts</a> |
+                    <a href="#myprivate">My private posts</a> |
+                    <a href="#feed">Feed</a>
+                </p>
+            </nav>
+
+            <div id="section_posts">
+                <p>Loading posts...</p>
+            </div>
+            <button type="button" id="fetchMoreButton" disabled>Fetch more posts</button>
+        </section>
+    </main>
+
+    <script>
+        const section_posts = document.getElementById("section_posts");
+        const fetchMoreButton = document.getElementById("fetchMoreButton");
+        const postButton = document.getElementById("postButton");
+        const img_preview = document.getElementById("img_preview");
+
+        /*
+            disableForm() disables a form while it is being submitted,
+            so the user cannot change it while the upload is running.
+        */
+        function disableForm(form, disabled) {
+            for (let field of form.querySelectorAll("input, textarea, button")) {
+                field.disabled = disabled;
+            }
+        }
+
+        /*
+            Preview the selected photo before it is uploaded.
+            The file is read as a data URL and shown in the <img> element.
+        */
+        document.getElementById("input_fileInput").onchange = function () {
+            let file = this.files[0];
+            if (!file) {
+                img_preview.hidden = true;
+                img_preview.removeAttribute("src");
+                return;
+            }
+
+            let reader = new FileReader();
+            reader.onload = () => {
+                img_preview.src = reader.result;
+                img_preview.hidden = false;
+            };
+            reader.readAsDataURL(file);
+        };
+
+        /*
+            Upload a post.
+            The submit event is passed to skapi.postRecord(), which reads the file (pic) and the description from the form.
+        */
+        function postPhoto(event) {
+            event.preventDefault();
+            let form = event.target;
+            disableForm(form, true);
+            postButton.textContent = "0%";
+
+            let params = {
+                table: {
+                    name: "posts",
+                    // A private post can only be read by its uploader. Other posts can be read by any logged in user.
+                    access_group: document.getElementById("input_private").checked ? "private" : "authorized",
+                    subscription: {
+                        is_subscription_record: false, // The posts stay queryable together with everyone else's posts.
+                        upload_to_feed: true, // The post also goes to the feed of the users subscribed to the uploader.
+                    },
+                },
+                source: {
+                    prevent_multiple_referencing: true, // Each user can reference (like) a post only once.
+                },
+                progress: (p) => {
+                    // Show the upload progress on the button.
+                    if (p.status === "upload" && p.currentFile) {
+                        postButton.textContent = `${Math.floor(p.progress)}%`;
+                    }
+                },
+                tags: document.getElementById("input_tags").value || null,
+            };
+
+            skapi.postRecord(event, params).then(async (record) => {
+                // Put the new post at the top of the list.
+                if (!section_posts.querySelector("article")) {
+                    section_posts.replaceChildren();
+                }
+                section_posts.prepend(await createArticleContent(record));
+
+                form.reset();
+                img_preview.hidden = true;
+                img_preview.removeAttribute("src");
+            }).catch((err) => alert(err.message)).finally(() => {
+                postButton.textContent = "Post";
+                disableForm(form, false);
+            });
+        }
+
+        /*
+            fetchQuery is the query passed to skapi.getRecords(). initialFetch() sets it from the URL hash.
+        */
+        let fetchQuery = {};
+        let fetchGeneration = 0;
+        let pendingLikes = new Set();
+        let pendingSubscriptions = new Set();
+
+        // record_id of the logged in user's like per post. Used to remove the like again.
+        let likeId = {};
+
+        // Cached profiles of uploaders and commenters, so each user is fetched once.
+        let userInfo = {};
+
+        // Cached subscription status per uploader: a subscription object, or false.
+        let subscription_list = {};
+
+        function getUserInfo(user_id) {
+            if (!userInfo[user_id]) {
+                userInfo[user_id] = skapi.getUsers({ searchFor: "user_id", value: user_id })
+                    .then((res) => res.list[0] || { name: "Unknown user" })
+                    .catch((err) => {
+                        console.error(err);
+                        return { name: "Unknown user" };
+                    });
+            }
+            return userInfo[user_id];
+        }
+
+        function getSubscriptionStatus(user_id) {
+            if (!subscription_list[user_id]) {
+                subscription_list[user_id] = userReady
+                    .then((me) => skapi.getSubscriptions({ subscriber: me.user_id, subscription: user_id }))
+                    .then((res) => res.list[0] || false);
+            }
+            return subscription_list[user_id];
+        }
+
+        function showEmptyMessage(text) {
+            let p = document.createElement("p");
+            p.textContent = text;
+            section_posts.replaceChildren(p);
+        }
+
+        function showPosts(articles, fetchMore, requestGeneration) {
+            if (!fetchMore) {
+                section_posts.replaceChildren();
+            }
+            for (let article of articles) {
+                if (article && requestGeneration === fetchGeneration) {
+                    section_posts.appendChild(article);
+                }
+            }
+            if (!section_posts.querySelector("article")) {
+                showEmptyMessage("No posts found.");
+            }
+        }
+
+        /*
+            Fetch posts with skapi.getRecords().
+            The fetch option fetchMore continues from the previous fetch; without it the list starts over.
+            With ascending false the records come newest first, or highest first when ordered by an index.
+        */
+        async function getPosts(fetchMore = true) {
+            fetchMoreButton.disabled = true;
+            const requestGeneration = ++fetchGeneration;
+
+            let posts;
+            try {
+                posts = await skapi.getRecords(fetchQuery, { ascending: false, limit: 4, fetchMore });
+            } catch (err) {
+                console.error(err);
+                if (requestGeneration === fetchGeneration) {
+                    showEmptyMessage(`Unable to load posts: ${err.message}`);
+                }
+                return;
+            }
+
+            if (requestGeneration !== fetchGeneration) {
+                return;
+            }
+
+            let articles = await Promise.all(posts.list.map((p) => createArticleContent(p)));
+            showPosts(articles, fetchMore, requestGeneration);
+
+            // endOfList is true when there is nothing more to fetch.
+            fetchMoreButton.disabled = posts.endOfList;
+            fetchMoreButton.onclick = () => getPosts();
+        }
+
+        /*
+            The feed holds the posts of the uploaders the user has subscribed to.
+        */
+        async function getFeed(fetchMore = true) {
+            fetchMoreButton.disabled = true;
+            const requestGeneration = ++fetchGeneration;
+
+            let posts;
+            try {
+                posts = await skapi.getFeed({ access_group: "authorized" }, { ascending: false, limit: 4, fetchMore });
+            } catch (err) {
+                console.error(err);
+                if (requestGeneration === fetchGeneration) {
+                    showEmptyMessage(`Unable to load feed: ${err.message}`);
+                }
+                return;
+            }
+
+            if (requestGeneration !== fetchGeneration) {
+                return;
+            }
+
+            let articles = await Promise.all(posts.list.map((p) => createArticleContent(p)));
+            showPosts(articles, fetchMore, requestGeneration);
+
+            fetchMoreButton.disabled = posts.endOfList;
+            fetchMoreButton.onclick = () => getFeed();
+        }
+
+        /*
+            Most commented posts.
+            Comments use the compound index name "comment.<record_id>", so skapi.getIndexes() can list the index
+            names under "comment." ordered by their totals. The record id of each post is taken from the index name.
+        */
+        async function getMostCommentedPost(fetchMore = true) {
+            fetchMoreButton.disabled = true;
+            const requestGeneration = ++fetchGeneration;
+
+            let commentIndex;
+            try {
+                commentIndex = await skapi.getIndexes(
+                    { table: "comments", index: "comment.", order: { by: "total_bool" } },
+                    { ascending: false, limit: 4, fetchMore }
+                );
+            } catch (err) {
+                console.error(err);
+                if (requestGeneration === fetchGeneration) {
+                    showEmptyMessage(`Unable to load posts: ${err.message}`);
+                }
+                return;
+            }
+
+            if (requestGeneration !== fetchGeneration) {
+                return;
+            }
+
+            let posts = await Promise.all(commentIndex.list.map((i) =>
+                skapi.getRecords({ record_id: i.index.slice("comment.".length) })
+                    .then((res) => res.list[0])
+                    .catch((err) => {
+                        console.error(err);
+                        return null;
+                    })
+            ));
+            let articles = await Promise.all(posts.map((p) => p ? createArticleContent(p) : null));
+            showPosts(articles, fetchMore, requestGeneration);
+
+            fetchMoreButton.disabled = commentIndex.endOfList;
+            fetchMoreButton.onclick = () => getMostCommentedPost();
+        }
+
+        /*
+            Build the <article> element for a post.
+            The values are set with textContent, so text from other users is never read as HTML.
+        */
+        async function createArticleContent(p) {
+            let me = await userReady;
+            if (!me || !p || !p.record_id) {
+                return null;
+            }
+
+            let record_id = p.record_id;
+            let uploader = await getUserInfo(p.user_id);
+            let isMine = p.user_id === me.user_id;
+
+            let article = document.createElement("article");
+            article.id = "post-" + record_id;
+            article.innerHTML = `
+                <header>
+                    <p>
+                        <strong class="uploader"></strong>
+                        <button type="button" class="subscribe" hidden disabled>Subscribe</button>
+                        <button type="button" class="delete" hidden>Delete</button>
+                    </p>
+                    <p><small>Posted <time></time></small></p>
+                </header>
+                <img alt="" hidden>
+                <p class="description"></p>
+                <p class="tags"><small></small></p>
+                <p>
+                    <button type="button" class="like" disabled>Like</button>
+                    <span class="like-count"></span> likes
+                </p>
+                <section>
+                    <h3>Comments (<span class="comment-count">0</span>)</h3>
+                    <form class="inline-form">
+                        <label>
+                            Write a comment
+                            <input type="text" name="comment" required>
+                        </label>
+                        <button type="submit">Comment</button>
+                    </form>
+                    <ul class="comments"></ul>
+                    <button type="button" class="more-comments" hidden>Show more comments</button>
+                </section>`;
+
+            article.querySelector(".uploader").textContent = uploader.name || uploader.email || "User";
+
+            let time = article.querySelector("time");
+            time.dateTime = new Date(p.updated).toISOString();
+            time.textContent = new Date(p.updated).toLocaleString();
+
+            let imageUrl = p.bin?.pic?.[0]?.url;
+            if (imageUrl) {
+                let img = article.querySelector("img");
+                img.src = imageUrl;
+                img.alt = p.data?.description || "";
+                img.hidden = false;
+            }
+
+            article.querySelector(".description").textContent = p.data?.description || "";
+
+            let tagsParagraph = article.querySelector(".tags");
+            if (p.tags?.length) {
+                let tags = tagsParagraph.querySelector("small");
+                tags.append("Tags: ");
+                p.tags.forEach((tag, i) => {
+                    let a = document.createElement("a");
+                    a.href = pageUrl("database.html#tag=" + encodeURIComponent(tag));
+                    a.textContent = tag;
+                    tags.append(i ? ", " : "", a);
+                });
+            } else {
+                tagsParagraph.hidden = true;
+            }
+
+            article.querySelector(".like-count").textContent = p.referenced_count || 0;
+
+            // Delete button, only on the user's own posts.
+            let deleteButton = article.querySelector(".delete");
+            if (isMine) {
+                deleteButton.hidden = false;
+                deleteButton.onclick = () => deletePost(article, record_id);
+            }
+
+            // Subscribe button, only on other users' posts. Its text is set once the subscription status is known.
+            let subscribeButton = article.querySelector(".subscribe");
+            if (!isMine) {
+                subscribeButton.hidden = false;
+                subscribeButton.dataset.userId = p.user_id;
+                subscribeButton.onclick = () => subscribe(p.user_id);
+                getSubscriptionStatus(p.user_id).then(() => updateSubscribeButtons(p.user_id)).catch((err) => console.error(err));
+            }
+
+            // Like button. Enabled once we know whether the user has liked this post already.
+            let likeButton = article.querySelector(".like");
+            likeButton.onclick = () => like(record_id);
+            skapi.getRecords({
+                table: "likes",
+                index: { name: "$user_id", value: me.user_id },
+                reference: record_id,
+            }).then((myLike) => {
+                if (myLike.list.length) {
+                    likeId[record_id] = myLike.list[0].record_id;
+                }
+                likeButton.textContent = likeId[record_id] ? "Unlike" : "Like";
+                likeButton.disabled = false;
+            }).catch((err) => console.error(err));
+
+            // Comments
+            article.querySelector("form").onsubmit = (event) => addComment(event, record_id);
+
+            let moreCommentsButton = article.querySelector(".more-comments");
+            let commentList = article.querySelector(".comments");
+            let loadComments = (fetchMore) => getComments(record_id, fetchMore).then((c) => {
+                commentList.append(...c.items);
+                moreCommentsButton.hidden = c.endOfList;
+            }).catch((err) => console.error(err));
+
+            moreCommentsButton.onclick = () => loadComments(true);
+            loadComments(false);
+
+            // The number of comments is the number of records under the post's comment index.
+            skapi.getIndexes({ table: "comments", index: "comment." + record_id }).then((info) => {
+                if (info.list.length) {
+                    article.querySelector(".comment-count").textContent = info.list[0].number_of_records || 0;
+                }
+            }).catch((err) => console.error(err));
+
+            return article;
+        }
+
+        async function deletePost(article, record_id) {
+            if (!confirm("Remove this post?")) {
+                return;
+            }
+            try {
+                await skapi.deleteRecords({ record_id });
+                article.remove();
+                if (!section_posts.querySelector("article")) {
+                    showEmptyMessage("No posts found.");
+                }
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
+        /*
+            Comments are records in the table "comments" with the index name "comment.<record_id>".
+            The four newest comments are fetched first; "Show more comments" continues from there.
+        */
+        async function getComments(record_id, fetchMore = false) {
+            let comments = await skapi.getRecords(
+                {
+                    table: { name: "comments", access_group: "authorized" },
+                    index: { name: "comment." + record_id, value: true },
+                },
+                { ascending: false, limit: 4, fetchMore }
+            );
+
+            let items = [];
+            for (let c of comments.list) {
+                let commenter = await getUserInfo(c.user_id);
+                items.push(createCommentElement(commenter, c.updated, c.data?.comment));
+            }
+            return { items, endOfList: comments.endOfList };
+        }
+
+        function createCommentElement(commenter, updated, text) {
+            let li = document.createElement("li");
+            let author = document.createElement("strong");
+            author.textContent = commenter.name || commenter.email || "User";
+            let time = document.createElement("time");
+            time.dateTime = new Date(updated).toISOString();
+            time.textContent = new Date(updated).toLocaleString();
+            let small = document.createElement("small");
+            small.append(" ", time);
+            let content = document.createElement("p");
+            content.textContent = text || "";
+            li.append(author, small, content);
+            return li;
+        }
+
+        async function addComment(event, record_id) {
+            event.preventDefault();
+            let me = await userReady;
+            if (!me) {
+                return;
+            }
+
+            let form = event.target;
+            disableForm(form, true);
+            try {
+                let comment = await skapi.postRecord(event, {
+                    table: { name: "comments", access_group: "authorized" },
+                    index: { name: "comment." + record_id, value: true },
+                });
+
+                let article = form.closest("article");
+                let counter = article.querySelector(".comment-count");
+                counter.textContent = Number(counter.textContent) + 1;
+                article.querySelector(".comments").prepend(createCommentElement(me, comment.updated, comment.data?.comment));
+                form.reset();
+            } catch (err) {
+                alert(err.message);
+            } finally {
+                disableForm(form, false);
+            }
+        }
+
+        /*
+            A like is a record in the table "likes" that references the post.
+            Because the post was uploaded with prevent_multiple_referencing, each user can like it only once.
+            Unliking deletes the like record.
+        */
+        async function like(record_id) {
+            let article = document.getElementById("post-" + record_id);
+            let likeButton = article.querySelector(".like");
+            let likeCount = article.querySelector(".like-count");
+            if (pendingLikes.has(record_id)) {
+                return;
+            }
+
+            pendingLikes.add(record_id);
+            likeButton.disabled = true;
+            try {
+                if (likeId[record_id]) {
+                    await skapi.deleteRecords({ record_id: likeId[record_id] });
+                    delete likeId[record_id];
+                    likeCount.textContent = Number(likeCount.textContent) - 1;
+                } else {
+                    let record = await skapi.postRecord(null, { table: "likes", reference: record_id });
+                    likeId[record_id] = record.record_id;
+                    likeCount.textContent = Number(likeCount.textContent) + 1;
+                }
+                likeButton.textContent = likeId[record_id] ? "Unlike" : "Like";
+            } catch (err) {
+                alert(err.message);
+            } finally {
+                likeButton.disabled = false;
+                pendingLikes.delete(record_id);
+            }
+        }
+
+        /*
+            Subscribe to an uploader with skapi.subscribe(), or unsubscribe with skapi.unsubscribe().
+            With get_feed the uploader's posts appear in the user's feed.
+        */
+        function updateSubscribeButtons(user_id) {
+            subscription_list[user_id].then((subscribed) => {
+                for (let button of document.querySelectorAll(`button.subscribe[data-user-id="${user_id}"]`)) {
+                    button.textContent = subscribed ? "Unsubscribe" : "Subscribe";
+                    button.disabled = pendingSubscriptions.has(user_id);
+                }
+            });
+        }
+
+        async function subscribe(user_id) {
+            if (pendingSubscriptions.has(user_id)) {
+                return;
+            }
+
+            pendingSubscriptions.add(user_id);
+            updateSubscribeButtons(user_id);
+            try {
+                let subscribed = await getSubscriptionStatus(user_id);
+                if (subscribed) {
+                    await skapi.unsubscribe({ user_id });
+                    subscription_list[user_id] = Promise.resolve(false);
+                } else {
+                    let sub = await skapi.subscribe({ user_id, get_feed: true });
+                    subscription_list[user_id] = Promise.resolve(sub);
+                }
+            } catch (err) {
+                alert(err.message);
+            } finally {
+                pendingSubscriptions.delete(user_id);
+                updateSubscribeButtons(user_id);
+            }
+        }
+
+        /*
+            The URL hash decides which posts are shown.
+            initialFetch() runs when the page loads and whenever the hash changes.
+        */
+        async function initialFetch() {
+            let me = await userReady;
+            if (!me) {
+                return;
+            }
+
+            let hash = location.hash.slice(1);
+
+            switch (hash) {
+                case "mostliked":
+                    // Ordered by the reserved index $referenced_count: the number of likes.
+                    fetchQuery = {
+                        table: { name: "posts", access_group: "authorized" },
+                        index: { name: "$referenced_count", value: 0, condition: ">" },
+                    };
+                    getPosts(false);
+                    break;
+
+                case "mostcomment":
+                    getMostCommentedPost(false);
+                    break;
+
+                case "myposts":
+                    // The reserved index $user_id: posts uploaded by the logged in user.
+                    fetchQuery = {
+                        table: { name: "posts", access_group: "authorized" },
+                        index: { name: "$user_id", value: me.user_id },
+                    };
+                    getPosts(false);
+                    break;
+
+                case "myprivate":
+                    // The same, in the access group "private".
+                    fetchQuery = {
+                        table: { name: "posts", access_group: "private" },
+                        index: { name: "$user_id", value: me.user_id },
+                    };
+                    getPosts(false);
+                    break;
+
+                case "feed":
+                    getFeed(false);
+                    break;
+
+                default:
+                    // All posts, newest first. With "#tag=<tag>" only the posts with that tag.
+                    fetchQuery = {
+                        table: { name: "posts", access_group: "authorized" },
+                    };
+                    if (hash.startsWith("tag=")) {
+                        let rawTag = hash.slice(4);
+                        try {
+                            fetchQuery.tag = decodeURIComponent(rawTag);
+                        } catch (err) {
+                            fetchQuery.tag = rawTag;
+                        }
+                    }
+                    getPosts(false);
+                    break;
+            }
+        }
+
+        initialFetch();
+        window.addEventListener("hashchange", initialFetch);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign up | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="account.html">User Account</a></li>
+                <li aria-current="page">Sign up</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Sign up</h1>
+        <p>
+            <code>skapi.signup()</code> creates an account. Email address and password are required; the other
+            fields (here, the name) become part of the user's profile.
+        </p>
+        <p>
+            With the <code>signup_confirmation</code> option Skapi sends a confirmation email, and the account can
+            only log in after the link in it has been clicked. The option is set to the address of the login page,
+            so the link brings the user there.
+        </p>
+
+        <form action="signup-success.html" onsubmit="signup(event)">
+            <label>
+                Email address
+                <input type="email" name="email" placeholder="your@email.com" required>
+            </label>
+            <label>
+                Password
+                <input type="password" name="password" minlength="6" placeholder="At least 6 characters" required>
+            </label>
+            <label>
+                Name
+                <input type="text" name="name" placeholder="Your name" required>
+            </label>
+            <button type="submit">Sign up</button>
+        </form>
+
+        <p>
+            <a href="login.html">Already have an account?</a>
+        </p>
+    </main>
+
+    <script>
+        // A user who is already logged in does not need to sign up.
+        userReady.then((user) => {
+            if (user) {
+                location.replace(pageUrl("account.html"));
+            }
+        });
+
+        async function signup(event) {
+            try {
+                // On success Skapi redirects to the form's action (signup-success.html).
+                await skapi.signup(event, { signup_confirmation: pageUrl("login.html") });
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+    </script>
+</body>
+
+</html>

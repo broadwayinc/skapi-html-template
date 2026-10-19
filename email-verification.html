@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Email verification | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="account.html">User Account</a></li>
+                <li aria-current="page">Email verification</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Email verification</h1>
+        <p>
+            A logged in user verifies their email address in two steps.
+            <code>skapi.verifyEmail()</code> without an argument sends a 6 digit code to the address, and
+            <code>skapi.verifyEmail()</code> with a form that holds the code completes the verification.
+        </p>
+        <p>
+            A verified email address is needed to reset a forgotten password, to recover a removed account and to
+            make the address visible to other users.
+        </p>
+
+        <!-- This page needs a logged in user (see LOGIN_REQUIRED in service.js). -->
+        <p id="emailStatus" role="status" aria-live="polite"></p>
+
+        <form onsubmit="sendCode(event)">
+            <p>Step 1: send the verification code to your email address.</p>
+            <button type="submit">Send code</button>
+        </form>
+
+        <form action="update-profile.html" onsubmit="verifyCode(event)" class="inline-form">
+            <label>
+                Step 2: enter the code from the email
+                <input type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" title="The 6 digit code" placeholder="6 digit code" required>
+            </label>
+            <button type="submit">Verify</button>
+        </form>
+    </main>
+
+    <script>
+        userReady.then((user) => {
+            if (!user) {
+                return;
+            }
+            let status = document.getElementById("emailStatus");
+            status.textContent = user.email_verified
+                ? `${user.email} is already verified.`
+                : `${user.email} is not verified yet.`;
+        });
+
+        async function sendCode(event) {
+            event.preventDefault();
+            let button = event.target.querySelector("button");
+            button.disabled = true;
+            try {
+                // Without an argument, verifyEmail() sends the code.
+                let message = await skapi.verifyEmail();
+                document.getElementById("emailStatus").textContent = message;
+            } catch (err) {
+                alert(err.message);
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        async function verifyCode(event) {
+            try {
+                // With the form, verifyEmail() checks the code. On success Skapi redirects to the form's action.
+                await skapi.verifyEmail(event);
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+    </script>
+</body>
+
+</html>

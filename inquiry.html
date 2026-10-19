@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Send Inquiry | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li aria-current="page">Send Inquiry</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Send Inquiry</h1>
+        <p>
+            A contact form. <code>skapi.sendInquiry()</code> emails the visitor's name, email address, subject and
+            message to you, the project owner. No account is needed.
+        </p>
+
+        <form onsubmit="sendInquiry(event)">
+            <label>
+                Name
+                <input type="text" name="name" placeholder="Your name" required>
+            </label>
+            <label>
+                Email address
+                <input type="email" name="email" placeholder="your@email.com" required>
+            </label>
+            <label>
+                Subject
+                <input type="text" name="subject" placeholder="How can we help?" required>
+            </label>
+            <label>
+                Message
+                <textarea name="message" placeholder="Write your message" rows="5" required></textarea>
+            </label>
+            <button type="submit">Send Inquiry</button>
+        </form>
+        <p id="inquiryStatus" role="status" aria-live="polite"></p>
+    </main>
+
+    <script>
+        async function sendInquiry(event) {
+            event.preventDefault();
+            let form = event.target;
+            let status = document.getElementById("inquiryStatus");
+            let button = form.querySelector("button");
+
+            button.disabled = true;
+            status.textContent = "Sending...";
+
+            try {
+                /*
+                    The submit event is passed to the method.
+                    Skapi reads name, email, subject and message from the form.
+                */
+                status.textContent = await skapi.sendInquiry(event);
+                form.reset();
+            } catch (err) {
+                status.textContent = err.message;
+            } finally {
+                button.disabled = false;
+            }
+        }
+    </script>
+</body>
+
+</html>

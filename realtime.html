@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Realtime Chat | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li aria-current="page">Realtime Chat</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Realtime Chat</h1>
+        <p>
+            Skapi's realtime API keeps a WebSocket connection open between the browser and Skapi.
+            <code>skapi.connectRealtime()</code> opens it and takes a callback that receives every message.
+            <code>skapi.joinRealtime()</code> puts the user in a group, and <code>skapi.postRealtime()</code>
+            sends a message to the group or, privately, to a single user.
+        </p>
+        <p>
+            Open this page in another browser or device with a different account and join the same group to chat.
+            Click a name in the participant list to send a private message.
+        </p>
+
+        <!-- This page needs a logged in user (see LOGIN_REQUIRED in service.js). -->
+
+        <!-- The group list is shown when no group is chosen. Choosing a group sets the URL hash. -->
+        <section id="groupList" hidden>
+            <h2>Chat groups</h2>
+            <form onsubmit="createGroup(event)" class="inline-form">
+                <label>
+                    New group name
+                    <input type="text" id="el_inp_group" name="value" placeholder="Enter a group name" required>
+                </label>
+                <button type="submit">Create</button>
+            </form>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Group</th>
+                        <th>Users</th>
+                    </tr>
+                </thead>
+                <tbody id="RealtimeGroups">
+                    <tr>
+                        <td colspan="2">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- The chat is shown once a group is joined. -->
+        <section id="chatbox" hidden>
+            <h2>Group <span id="el_groupname"></span></h2>
+            <p><a href="realtime.html">Back to the group list</a></p>
+
+            <div class="chat">
+                <div id="chatMessages" role="log" aria-live="polite"></div>
+                <ul id="participants" aria-label="Participants"></ul>
+            </div>
+
+            <form onsubmit="sendGroupMessage(event)" class="inline-form">
+                <label>
+                    Message
+                    <input type="text" name="chatmsg" placeholder="Type your message" required>
+                </label>
+                <button type="submit">Send</button>
+            </form>
+        </section>
+    </main>
+
+    <!-- A received private message -->
+    <dialog id="privateMsgDialog">
+        <h2>Private message from <span id="privateMsgFrom"></span></h2>
+        <p id="privateMsg"></p>
+        <button type="button" onclick="document.getElementById('privateMsgDialog').close()">Close</button>
+    </dialog>
+
+    <!-- Sending a private message -->
+    <dialog id="privateMsgSender">
+        <h2>Private message to <span id="privateMsgTo"></span></h2>
+        <form onsubmit="sendPrivateMessage(event)">
+            <label>
+                Message
+                <input type="text" name="msg" placeholder="Write a message" required>
+            </label>
+            <button type="submit">Send</button>
+            <button type="button" onclick="document.getElementById('privateMsgSender').close()">Cancel</button>
+        </form>
+    </dialog>
+
+    <script>
+        let currentUser = null;
+        let currentGroup = null;
+        let joinGeneration = 0;
+        let sendTo = null;
+
+        // Profiles of the users in the group, fetched once per user.
+        let participants = {};
+
+        const chatMessages = document.getElementById("chatMessages");
+        const participantList = document.getElementById("participants");
+
+        function displayName(user) {
+            return user?.name || user?.email || user?.user_id || "User";
+        }
+
+        // A line in the chat: "<name>: <text>", or a notice such as "<name> joined".
+        function appendChatMessage(user, text, isNotice = false) {
+            let p = document.createElement("p");
+            if (isNotice) {
+                p.className = "notice";
+                p.textContent = text;
+            } else {
+                let name = document.createElement("strong");
+                name.textContent = displayName(user) + ": ";
+                p.append(name, text);
+            }
+            chatMessages.appendChild(p);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function clearChat() {
+            chatMessages.replaceChildren();
+            participantList.replaceChildren();
+        }
+
+        /*
+            Fetch a user's profile with skapi.getUsers() and add the user to the participant list.
+            Other users are shown as a button that opens the private message dialog.
+        */
+        async function getUserInfo(user_id) {
+            if (participants[user_id]) {
+                return participants[user_id];
+            }
+
+            let user;
+            if (user_id === currentUser.user_id) {
+                user = currentUser;
+            } else {
+                try {
+                    user = (await skapi.getUsers({ searchFor: "user_id", value: user_id })).list?.[0];
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+            if (!user) {
+                return null;
+            }
+
+            participants[user_id] = user;
+
+            let li = document.createElement("li");
+            li.id = "participant-" + user_id;
+            if (user_id === currentUser.user_id) {
+                li.textContent = displayName(user) + " (you)";
+            } else {
+                let button = document.createElement("button");
+                button.type = "button";
+                button.textContent = displayName(user);
+                button.onclick = () => {
+                    sendTo = user;
+                    document.getElementById("privateMsgTo").textContent = displayName(user);
+                    document.getElementById("privateMsgSender").showModal();
+                };
+                li.appendChild(button);
+            }
+            participantList.appendChild(li);
+            return user;
+        }
+
+        /*
+            Every realtime message arrives here.
+            rt.type is one of: 'message', 'private', 'notice', 'error', 'success', 'close', 'reconnect',
+            'rtc:incoming', 'rtc:closed'.
+        */
+        async function realtimeCallback(rt) {
+            console.log(rt);
+            if (!currentUser) {
+                return;
+            }
+
+            if (rt.type === "message") {
+                // A message posted to the group. rt.message holds the form data that was sent.
+                let user = await getUserInfo(rt.sender);
+                appendChatMessage(user, rt.message?.chatmsg || "");
+            } else if (rt.type === "private") {
+                // A message posted to this user.
+                if (rt.sender === currentUser.user_id) {
+                    return;
+                }
+                let user = await getUserInfo(rt.sender);
+                document.getElementById("privateMsgFrom").textContent = displayName(user);
+                document.getElementById("privateMsg").textContent = rt.message?.msg || "";
+                let dialog = document.getElementById("privateMsgDialog");
+                if (!dialog.open) {
+                    dialog.showModal();
+                }
+            } else if (rt.type === "notice") {
+                // Users joining and leaving the group.
+                if (["USER_LEFT", "USER_DISCONNECTED"].includes(rt.code)) {
+                    let user = participants[rt.sender];
+                    document.getElementById("participant-" + rt.sender)?.remove();
+                    delete participants[rt.sender];
+                    appendChatMessage(null, `${displayName(user)} left the group.`, true);
+                } else if (rt.code === "USER_JOINED") {
+                    let user = await getUserInfo(rt.sender);
+                    appendChatMessage(null, `${displayName(user)} joined the group.`, true);
+                }
+            } else if (rt.type === "error") {
+                console.error(rt.message);
+            }
+        }
+
+        // Connect once the user is known. The realtime connection needs a logged in user.
+        const connectionReady = userReady.then(async (user) => {
+            if (!user) {
+                return false;
+            }
+            currentUser = user;
+            await skapi.connectRealtime(realtimeCallback);
+            return true;
+        }).catch((err) => {
+            console.error(err);
+            alert(err.message);
+            return false;
+        });
+
+        /*
+            List the groups with skapi.getRealtimeGroups().
+            A group exists as long as someone is in it.
+        */
+        async function listGroups() {
+            let tbody = document.getElementById("RealtimeGroups");
+            let groups;
+            try {
+                groups = await skapi.getRealtimeGroups();
+            } catch (err) {
+                console.error(err);
+                tbody.innerHTML = "<tr><td colspan='2'>Unable to load the groups.</td></tr>";
+                return;
+            }
+
+            tbody.replaceChildren();
+            if (!groups.list.length) {
+                tbody.innerHTML = "<tr><td colspan='2'>No groups yet. Create one above.</td></tr>";
+                return;
+            }
+
+            for (let group of groups.list) {
+                let row = document.createElement("tr");
+                let nameCell = document.createElement("td");
+                let link = document.createElement("a");
+                link.href = "#" + encodeURIComponent(group.group);
+                link.textContent = group.group;
+                nameCell.appendChild(link);
+                let usersCell = document.createElement("td");
+                usersCell.textContent = group.number_of_users;
+                row.append(nameCell, usersCell);
+                tbody.appendChild(row);
+            }
+        }
+
+        async function createGroup(event) {
+            event.preventDefault();
+            let groupName = event.target.elements.value.value.trim();
+            if (!groupName) {
+                return;
+            }
+
+            try {
+                let existing = await skapi.getRealtimeGroups({ searchFor: "group", condition: "=", value: groupName });
+                if (existing.list.length) {
+                    alert("A group with this name already exists.");
+                    return;
+                }
+                // Joining a group that does not exist yet creates it.
+                location.hash = encodeURIComponent(groupName);
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
+        async function sendGroupMessage(event) {
+            event.preventDefault();
+            if (!currentGroup) {
+                return;
+            }
+            try {
+                // The form data ({ chatmsg }) is sent to everyone in the group, including this user.
+                await skapi.postRealtime(event, currentGroup);
+                event.target.reset();
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
+        async function sendPrivateMessage(event) {
+            event.preventDefault();
+            if (!sendTo?.user_id) {
+                return;
+            }
+            try {
+                // With a user id instead of a group name, the message goes to that user only.
+                await skapi.postRealtime(event, sendTo.user_id);
+                event.target.reset();
+                document.getElementById("privateMsgSender").close();
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
+        /*
+            The URL hash names the group.
+            With a hash the group is joined and the chat is shown; without one the group list is shown.
+        */
+        async function joinGroup() {
+            if (!await connectionReady) {
+                return;
+            }
+
+            let requestGeneration = ++joinGeneration;
+            clearChat();
+            participants = {};
+
+            let encodedGroup = location.hash.slice(1);
+            if (!encodedGroup) {
+                document.getElementById("chatbox").hidden = true;
+                document.getElementById("groupList").hidden = false;
+                document.getElementById("el_groupname").textContent = "";
+                currentGroup = null;
+                try {
+                    await skapi.joinRealtime({ group: null }); // Leave the current group.
+                } catch (err) {
+                    console.error(err);
+                }
+                listGroups();
+                return;
+            }
+
+            try {
+                currentGroup = decodeURIComponent(encodedGroup);
+            } catch (err) {
+                currentGroup = encodedGroup;
+            }
+            document.getElementById("el_groupname").textContent = currentGroup;
+            document.getElementById("chatbox").hidden = false;
+            document.getElementById("groupList").hidden = true;
+
+            try {
+                await skapi.joinRealtime({ group: currentGroup });
+                // List who is in the group already.
+                let users = await skapi.getRealtimeUsers({ group: currentGroup });
+                if (requestGeneration !== joinGeneration) {
+                    return;
+                }
+                await Promise.all(users.list.map((member) => getUserInfo(member.user_id)));
+            } catch (err) {
+                if (requestGeneration === joinGeneration) {
+                    alert(err.message);
+                }
+            }
+        }
+
+        window.addEventListener("hashchange", joinGroup);
+        joinGroup();
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RTC Video Chat | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li aria-current="page">RTC Video Chat</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>RTC Video Chat</h1>
+        <p>
+            WebRTC connects two browsers directly for video, audio, the screen and data. Skapi does the signaling
+            over its realtime connection: <code>skapi.connectRTC()</code> calls another user, the callee receives an
+            <code>rtc:incoming</code> message and answers with <code>connectRTC()</code> on it, and Skapi negotiates
+            the peer connection between the two.
+        </p>
+        <p>
+            The <code>media</code> option names what to send: the camera, the microphone, the screen, or any mix.
+            During a call, <code>share()</code> and <code>unshare()</code> add and remove the screen, and
+            <code>mute()</code> pauses the microphone or the camera. The other side tells the tracks apart by the
+            <code>source</code> of its <code>track</code> events.
+        </p>
+        <p>
+            Users find each other in the realtime group <code>RTCCall</code>. Open this page in another browser or
+            device with a different account and call each other. WebRTC works over HTTPS, or on localhost.
+        </p>
+
+        <!-- This page needs a logged in user (see LOGIN_REQUIRED in service.js). -->
+
+        <section id="el_dl_calllist">
+            <h2>Users online</h2>
+            <fieldset>
+                <legend>Call with</legend>
+                <label>
+                    <input type="checkbox" id="allow_video" checked>
+                    Video
+                </label>
+                <label>
+                    <input type="checkbox" id="allow_audio" checked>
+                    Audio
+                </label>
+                <label>
+                    <input type="checkbox" id="allow_screen">
+                    Screen (the browser asks which window or tab to share)
+                </label>
+            </fieldset>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Connection ID</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="RealtimeParticipants">
+                    <tr data-state="loading">
+                        <td colspan="3">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="el_video_call" hidden>
+            <h2>In a call</h2>
+
+            <!-- One tile per stream. A tile is shown when its track arrives and hidden when it goes away. -->
+            <div class="videos">
+                <figure id="tile_local_camera" hidden>
+                    <video id="localCamera" autoplay muted playsinline aria-label="Your camera"></video>
+                    <figcaption>You</figcaption>
+                </figure>
+                <figure id="tile_local_screen" class="screen" hidden>
+                    <video id="localScreen" autoplay muted playsinline aria-label="Your screen"></video>
+                    <figcaption>Your screen</figcaption>
+                </figure>
+                <figure id="tile_remote_camera" hidden>
+                    <video id="remoteCamera" autoplay playsinline aria-label="The other user's camera"></video>
+                    <figcaption>Them</figcaption>
+                </figure>
+                <figure id="tile_remote_screen" class="screen" hidden>
+                    <video id="remoteScreen" autoplay playsinline aria-label="The other user's screen"></video>
+                    <figcaption>Their screen</figcaption>
+                </figure>
+            </div>
+
+            <p class="controls">
+                <button type="button" id="btn_screen" onclick="toggleScreen()">Share screen</button>
+                <button type="button" id="btn_mic" onclick="toggleMicrophone()">Mute microphone</button>
+                <button type="button" id="btn_camera" onclick="toggleCamera()">Turn camera off</button>
+                <button type="button" onclick="hangupRTC()">Hang up</button>
+            </p>
+
+            <!-- Text messages go over the RTC data channel, directly between the two browsers. -->
+            <form onsubmit="sendRTCMessage(event)" class="inline-form">
+                <label>
+                    Message over the data channel
+                    <input type="text" id="el_input_rtcMessage" name="message" placeholder="Type a message" required>
+                </label>
+                <button type="submit">Send</button>
+            </form>
+            <ul id="rtcMessages" aria-label="Data channel messages" aria-live="polite"></ul>
+        </section>
+    </main>
+
+    <dialog id="el_dl_calling">
+        <p>Calling...</p>
+        <button type="button" onclick="hangupRTC()">Cancel</button>
+    </dialog>
+
+    <dialog id="el_dl_incoming">
+        <p>Incoming <span id="incomingKind">call</span> from <span id="incomingFrom"></span></p>
+        <p id="incomingSends"></p>
+        <button type="button" onclick="acceptIncomingCall()">Accept</button>
+        <button type="button" onclick="rejectIncomingCall()">Reject</button>
+    </dialog>
+
+    <script>
+        let currentUser = null;
+        let call = null; // The outgoing call, returned by skapi.connectRTC()
+        let receiver = null; // The incoming call, the rtc:incoming realtime message
+        let rtcConnection = null; // The established connection
+        let participants = {}; // user_id: profile
+        let cidList = {}; // connection id: user_id
+
+        function displayName(user) {
+            return user?.name || user?.email || user?.user_id || "User";
+        }
+
+        /*
+            What this side sends, from the checkboxes.
+            `screen` opens the browser's share picker; the contentHint keeps text on the screen sharp.
+        */
+        function mediaOptions() {
+            return {
+                audio: document.getElementById("allow_audio").checked,
+                video: document.getElementById("allow_video").checked,
+                screen: document.getElementById("allow_screen").checked ? { contentHint: "text" } : false,
+            };
+        }
+
+        // A word for the call, sent as `meta` so the other side can say what is coming in before answering.
+        function callKind(media) {
+            if (media.screen) return "screen share";
+            if (media.video) return "video call";
+            if (media.audio) return "voice call";
+            return "data call";
+        }
+
+        // The `sources` of an incoming call name what the caller sends: camera, microphone, screen.
+        function describeSources(sources) {
+            let names = (sources || []).filter((s) => ["camera", "microphone", "screen"].includes(s));
+            if (!names.length) return "They send no media.";
+            return "They send their " + names.join(", ").replace(/, ([^,]*)$/, " and $1") + ".";
+        }
+
+        function appendRTCMessage(from, text) {
+            let li = document.createElement("li");
+            let name = document.createElement("strong");
+            name.textContent = from + ": ";
+            li.append(name, text);
+            let list = document.getElementById("rtcMessages");
+            list.appendChild(li);
+            list.scrollTop = list.scrollHeight;
+        }
+
+        function showTile(id, video, stream) {
+            document.getElementById(id).hidden = false;
+            let el = document.getElementById(video);
+            if (el.srcObject !== stream) {
+                el.srcObject = stream;
+                el.play().catch((err) => console.error(err));
+            }
+        }
+
+        function hideTile(id, video) {
+            document.getElementById(id).hidden = true;
+            document.getElementById(video).srcObject = null;
+        }
+
+        /*
+            The local tiles and the buttons follow what is on the call.
+            rtcConnection.tracks('camera') lists the local tracks of one source.
+        */
+        function showLocalMedia() {
+            if (!rtcConnection) return;
+            let camera = rtcConnection.tracks("camera");
+            let screen = rtcConnection.tracks("screen");
+            let microphone = rtcConnection.tracks("microphone");
+
+            if (camera.length) showTile("tile_local_camera", "localCamera", new MediaStream(camera));
+            else hideTile("tile_local_camera", "localCamera");
+
+            if (screen.length) showTile("tile_local_screen", "localScreen", new MediaStream(screen));
+            else hideTile("tile_local_screen", "localScreen");
+
+            document.getElementById("btn_screen").textContent = screen.length ? "Stop sharing" : "Share screen";
+            document.getElementById("btn_mic").hidden = !microphone.length;
+            document.getElementById("btn_camera").hidden = !camera.length;
+        }
+
+        /*
+            Events of the RTC connection: the peer connection state, the incoming media and the data channel.
+            Every track event carries `source`: what the other side says the track is.
+        */
+        function RTCCallback(e) {
+            console.log("RTC:", e);
+
+            switch (e.type) {
+                case "track": {
+                    // The other user's media. The screen gets its own tile; camera and microphone share one.
+                    let stream = e.streams?.[0] || new MediaStream([e.track]);
+                    if (e.source === "screen") showTile("tile_remote_screen", "remoteScreen", stream);
+                    else showTile("tile_remote_camera", "remoteCamera", stream);
+                    break;
+                }
+
+                case "trackmute":
+                case "trackended":
+                    // The other side stopped sharing its screen.
+                    if (e.source === "screen") hideTile("tile_remote_screen", "remoteScreen");
+                    break;
+
+                case "trackunmute":
+                    if (e.source === "screen") showTile("tile_remote_screen", "remoteScreen", e.streams?.[0] || new MediaStream([e.track]));
+                    break;
+
+                case "unshare":
+                    // A local track left the call: unshare() was called, or the browser's own "Stop sharing" button was used.
+                    showLocalMedia();
+                    break;
+
+                case "connectionstatechange": {
+                    document.getElementById("el_dl_calling").close();
+                    document.getElementById("el_dl_incoming").close();
+
+                    let videoCall = document.getElementById("el_video_call");
+                    let callList = document.getElementById("el_dl_calllist");
+                    if (["disconnected", "failed", "closed"].includes(e.state)) {
+                        // Also when the other user rejected or hung up.
+                        videoCall.hidden = true;
+                        callList.hidden = false;
+                        document.getElementById("rtcMessages").replaceChildren();
+                        for (let [tile, video] of [["tile_local_camera", "localCamera"], ["tile_local_screen", "localScreen"], ["tile_remote_camera", "remoteCamera"], ["tile_remote_screen", "remoteScreen"]]) {
+                            hideTile(tile, video);
+                        }
+                        document.getElementById("btn_mic").textContent = "Mute microphone";
+                        document.getElementById("btn_camera").textContent = "Turn camera off";
+                        rtcConnection = null;
+                        call = null;
+                        receiver = null;
+                    } else if (["connecting", "connected"].includes(e.state)) {
+                        videoCall.hidden = false;
+                        callList.hidden = true;
+                        showLocalMedia();
+                    }
+                    break;
+                }
+
+                case "message":
+                    // A data channel message from the other user.
+                    appendRTCMessage("Them", String(e.data));
+                    break;
+            }
+        }
+
+        /*
+            Controls during the call.
+            share('screen') asks the browser which window or tab to share and adds it to the call;
+            unshare('screen') takes it off again. Both renegotiate the connection on their own.
+        */
+        async function toggleScreen() {
+            if (!rtcConnection) return;
+            if (rtcConnection.tracks("screen").length) {
+                rtcConnection.unshare("screen"); // the unshare event updates the page
+                return;
+            }
+            try {
+                await rtcConnection.share("screen", { contentHint: "text" });
+                showLocalMedia();
+            } catch (err) {
+                // The share picker was closed without a choice, or sharing is not allowed here.
+                console.error(err);
+            }
+        }
+
+        // mute() keeps the track on the call and sends silence or black frames while it is paused.
+        function toggleMicrophone() {
+            if (!rtcConnection) return;
+            let on = rtcConnection.tracks("microphone").some((t) => t.enabled);
+            rtcConnection.mute({ audio: on });
+            document.getElementById("btn_mic").textContent = on ? "Unmute microphone" : "Mute microphone";
+        }
+
+        function toggleCamera() {
+            if (!rtcConnection) return;
+            let on = rtcConnection.tracks("camera").some((t) => t.enabled);
+            rtcConnection.mute({ video: on });
+            document.getElementById("btn_camera").textContent = on ? "Turn camera on" : "Turn camera off";
+        }
+
+        function sendRTCMessage(event) {
+            event.preventDefault();
+            let input = document.getElementById("el_input_rtcMessage");
+            let channel = rtcConnection?.channels?.default;
+            if (!channel || channel.readyState !== "open") {
+                alert("The data channel is not open.");
+                return;
+            }
+            channel.send(input.value);
+            appendRTCMessage("You", input.value);
+            event.target.reset();
+        }
+
+        function hangupRTC() {
+            if (rtcConnection?.hangup) {
+                rtcConnection.hangup();
+            } else if (call?.hangup) {
+                call.hangup();
+            } else {
+                receiver?.hangup?.();
+            }
+        }
+
+        /*
+            Call a user by their connection id.
+            call.connection resolves to the RTC connection once the other user accepts.
+            A rejection shows up as a connectionstatechange event in RTCCallback.
+        */
+        async function callRTC(cid) {
+            if (call || rtcConnection || receiver) {
+                alert("A call is already active.");
+                return;
+            }
+
+            let media = mediaOptions();
+            call = await skapi.connectRTC({ cid, media, meta: { kind: callKind(media) } }, RTCCallback);
+
+            let dialog = document.getElementById("el_dl_calling");
+            if (!dialog.open) {
+                dialog.showModal();
+            }
+
+            rtcConnection = await call.connection;
+            showLocalMedia();
+        }
+
+        async function acceptIncomingCall() {
+            if (!receiver) {
+                return;
+            }
+            try {
+                rtcConnection = await receiver.connectRTC({ media: mediaOptions() }, RTCCallback);
+                document.getElementById("el_dl_incoming").close();
+                showLocalMedia();
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
+        function rejectIncomingCall() {
+            receiver?.hangup?.();
+            document.getElementById("el_dl_incoming").close();
+            receiver = null;
+        }
+
+        /*
+            The list of users who can be called: everyone else in the realtime group "RTCCall".
+            Each row holds the user's connection id (cid), which is what connectRTC() calls.
+        */
+        function showParticipantMessage(message) {
+            let tbody = document.getElementById("RealtimeParticipants");
+            let row = document.createElement("tr");
+            row.dataset.state = "message";
+            let cell = document.createElement("td");
+            cell.colSpan = 3;
+            cell.textContent = message;
+            row.appendChild(cell);
+            tbody.replaceChildren(row);
+        }
+
+        function hasParticipantRows() {
+            return Boolean(document.querySelector("#RealtimeParticipants tr[id^='el_tr_participant-']"));
+        }
+
+        async function addCallList(user_id, cid) {
+            if (!currentUser || user_id === currentUser.user_id) {
+                return;
+            }
+
+            let user = participants[user_id];
+            if (!user) {
+                try {
+                    user = (await skapi.getUsers({ searchFor: "user_id", value: user_id })).list?.[0];
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+            if (!user) {
+                return;
+            }
+            participants[user_id] = user;
+            cidList[cid] = user_id;
+
+            if (document.getElementById("el_tr_participant-" + cid)) {
+                return;
+            }
+
+            let tbody = document.getElementById("RealtimeParticipants");
+            tbody.querySelector("[data-state]")?.remove();
+
+            let row = document.createElement("tr");
+            row.id = "el_tr_participant-" + cid;
+            let nameCell = document.createElement("td");
+            nameCell.textContent = displayName(user);
+            let cidCell = document.createElement("td");
+            cidCell.textContent = cid;
+            let callCell = document.createElement("td");
+            let callButton = document.createElement("button");
+            callButton.type = "button";
+            callButton.textContent = "Call";
+            callButton.onclick = () => callRTC(cid).catch((err) => alert(err.message));
+            callCell.appendChild(callButton);
+            row.append(nameCell, cidCell, callCell);
+            tbody.appendChild(row);
+        }
+
+        /*
+            Realtime messages: users joining and leaving the group, and incoming calls.
+        */
+        function realtimeCallback(rt) {
+            console.log(rt);
+
+            if (rt.type === "notice") {
+                if (["USER_LEFT", "USER_DISCONNECTED"].includes(rt.code)) {
+                    document.getElementById("el_tr_participant-" + rt.sender_cid)?.remove();
+                    delete participants[rt.sender];
+                    delete cidList[rt.sender_cid];
+                    if (!hasParticipantRows()) {
+                        showParticipantMessage("No other user is online.");
+                    }
+                } else if (rt.code === "USER_JOINED") {
+                    addCallList(rt.sender, rt.sender_cid).catch((err) => console.error(err));
+                }
+            }
+
+            if (rt.type === "rtc:closed" && receiver?.sender_cid === rt.sender_cid) {
+                // The caller cancelled before this side answered.
+                document.getElementById("el_dl_incoming").close();
+                receiver = null;
+            }
+
+            if (rt.type === "rtc:incoming") {
+                // Someone is calling. The message object is used to accept (connectRTC) or reject (hangup) the call.
+                // rt.meta is what the caller passed as `meta`; rt.sources names what the caller sends.
+                receiver = rt;
+                document.getElementById("incomingKind").textContent = rt.meta?.kind || "call";
+                document.getElementById("incomingFrom").textContent = displayName(participants[rt.sender]);
+                document.getElementById("incomingSends").textContent = describeSources(rt.sources);
+                let dialog = document.getElementById("el_dl_incoming");
+                if (!dialog.open) {
+                    dialog.showModal();
+                }
+            }
+        }
+
+        async function getRealtimeUsers() {
+            let res = await skapi.getRealtimeUsers({ group: "RTCCall" });
+            let others = res.list.filter((p) => p.user_id !== currentUser.user_id);
+            await Promise.all(others.map((p) => addCallList(p.user_id, p.cid)));
+            if (!hasParticipantRows()) {
+                showParticipantMessage("No other user is online.");
+            }
+        }
+
+        // Connect once the user is known, join the group and list who is there.
+        userReady.then(async (user) => {
+            if (!user) {
+                return;
+            }
+            currentUser = user;
+            await skapi.connectRealtime(realtimeCallback);
+            await skapi.joinRealtime({ group: "RTCCall" });
+            await getRealtimeUsers();
+        }).catch((err) => {
+            console.error(err);
+            alert(err.message);
+        });
+    </script>
+</body>
+
+</html>

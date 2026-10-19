@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Update profile | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="account.html">User Account</a></li>
+                <li aria-current="page">Update profile</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Update profile</h1>
+        <p>
+            <code>skapi.updateProfile()</code> changes the logged in user's profile: the name, birthdate, email
+            address and whether the email address is visible to other users. The form is filled with the current
+            profile first.
+        </p>
+        <p>
+            The email address can only be made public once it is verified.
+            Changing the email address makes it unverified again.
+        </p>
+
+        <!-- This page needs a logged in user (see LOGIN_REQUIRED in service.js). -->
+        <form action="account.html" onsubmit="updateProfile(event)">
+            <label>
+                Email address
+                <input type="email" id="input_email" name="email" placeholder="your@email.com" required>
+            </label>
+            <p id="email_verification_note" hidden>
+                <small>This email address is not verified. <a href="email-verification.html">Verify it</a> to make it public.</small>
+            </p>
+            <label>
+                <input type="checkbox" id="input_emailPublic" name="email_public">
+                Show my email address to other users
+            </label>
+            <label>
+                Name
+                <input type="text" id="input_name" name="name" placeholder="Your name" required>
+            </label>
+            <label>
+                Birthdate
+                <input type="date" id="input_birthdate" name="birthdate">
+            </label>
+            <button type="submit">Update profile</button>
+        </form>
+    </main>
+
+    <script>
+        // Fill the form with the current profile.
+        userReady.then((user) => {
+            if (!user) {
+                return;
+            }
+
+            document.getElementById("input_email").value = user.email || "";
+            document.getElementById("input_name").value = user.name || "";
+            document.getElementById("input_birthdate").value = user.birthdate || "";
+
+            let emailPublic = document.getElementById("input_emailPublic");
+            emailPublic.checked = Boolean(user.email_public && user.email_verified);
+            if (!user.email_verified) {
+                // An unverified email address cannot be made public.
+                emailPublic.disabled = true;
+                document.getElementById("email_verification_note").hidden = false;
+            }
+        });
+
+        async function updateProfile(event) {
+            try {
+                // On success Skapi redirects to the form's action (account.html).
+                await skapi.updateProfile(event);
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+    </script>
+</body>
+
+</html>

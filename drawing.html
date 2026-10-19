@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Shared Drawing | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li aria-current="page">Shared Drawing</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Shared Drawing</h1>
+        <p>
+            Two users draw on one canvas. Every stroke is sent over a WebRTC data channel, straight from one browser
+            to the other, and drawn on the other side as it happens. No video is involved: a stroke is a few numbers,
+            so this costs almost no bandwidth and both sides can draw at once.
+        </p>
+        <p>
+            <code>skapi.connectRTC()</code> opens the connection with a data channel named <code>drawing</code> and
+            no media, unless <strong>Voice</strong> is on, which adds the microphone. The callee gets an
+            <code>rtc:incoming</code> message whose <code>meta</code> says it is a drawing invitation.
+        </p>
+        <p>
+            Users find each other in the realtime group <code>RTCDraw</code>. Open this page in another browser or
+            device with a different account and invite each other.
+        </p>
+
+        <!-- This page needs a logged in user (see LOGIN_REQUIRED in service.js). -->
+
+        <section id="el_dl_userlist">
+            <h2>Users online</h2>
+            <fieldset>
+                <legend>Draw with</legend>
+                <label>
+                    <input type="checkbox" id="allow_voice">
+                    Voice (adds the microphone to the connection)
+                </label>
+            </fieldset>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Connection ID</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="RealtimeParticipants">
+                    <tr data-state="loading">
+                        <td colspan="3">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="el_board" hidden>
+            <h2>Drawing with <span id="drawingWith"></span></h2>
+
+            <p class="swatches" role="group" aria-label="Pen color">
+                <button type="button" data-color="#222222" style="background: #222222" aria-label="Black" aria-pressed="true" onclick="pickColor(this)"></button>
+                <button type="button" data-color="#c62828" style="background: #c62828" aria-label="Red" aria-pressed="false" onclick="pickColor(this)"></button>
+                <button type="button" data-color="#1565c0" style="background: #1565c0" aria-label="Blue" aria-pressed="false" onclick="pickColor(this)"></button>
+                <button type="button" data-color="#2e7d32" style="background: #2e7d32" aria-label="Green" aria-pressed="false" onclick="pickColor(this)"></button>
+                <button type="button" onclick="clearBoard()">Clear</button>
+                <button type="button" onclick="leaveDrawing()">Leave</button>
+            </p>
+
+            <!-- The canvas. Pointer events draw locally and send each segment to the other side. -->
+            <canvas id="board" class="board" width="800" height="500" aria-label="Shared drawing board"></canvas>
+            <p id="boardStatus" role="status"></p>
+
+            <!-- The other user's voice, when the microphone is on. -->
+            <audio id="remoteAudio" autoplay></audio>
+        </section>
+    </main>
+
+    <dialog id="el_dl_calling">
+        <p>Inviting...</p>
+        <button type="button" onclick="leaveDrawing()">Cancel</button>
+    </dialog>
+
+    <dialog id="el_dl_incoming">
+        <p><span id="incomingFrom"></span> wants to draw with you<span id="incomingVoice"></span>.</p>
+        <button type="button" onclick="acceptInvitation()">Accept</button>
+        <button type="button" onclick="rejectInvitation()">Reject</button>
+    </dialog>
+
+    <script>
+        const GROUP = "RTCDraw";
+        let currentUser = null;
+        let call = null; // The outgoing invitation, returned by skapi.connectRTC()
+        let receiver = null; // The incoming invitation, the rtc:incoming realtime message
+        let rtcConnection = null; // The established connection
+        let channel = null; // The "drawing" data channel, once open
+        let participants = {}; // user_id: profile
+        let cidList = {}; // connection id: user_id
+
+        const board = document.getElementById("board");
+        const ctx = board.getContext("2d");
+        let color = "#222222";
+        let penDown = false;
+        let last = null;
+
+        function displayName(user) {
+            return user?.name || user?.email || user?.user_id || "User";
+        }
+
+        /*
+            Drawing. Positions are kept as fractions of the canvas size, so both sides draw the same picture
+            whatever size the canvas has on their screen.
+        */
+        function position(event) {
+            let rect = board.getBoundingClientRect();
+            return { x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height };
+        }
+
+        function drawSegment(from, to, penColor, width) {
+            ctx.strokeStyle = penColor;
+            ctx.lineWidth = width;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.moveTo(from.x * board.width, from.y * board.height);
+            ctx.lineTo(to.x * board.width, to.y * board.height);
+            ctx.stroke();
+        }
+
+        // Everything the other side needs to draw the same thing, as JSON over the data channel.
+        function send(message) {
+            if (channel?.readyState === "open") {
+                channel.send(JSON.stringify(message));
+            }
+        }
+
+        board.addEventListener("pointerdown", (event) => {
+            penDown = true;
+            last = position(event);
+            try { board.setPointerCapture(event.pointerId); } catch (err) { }
+        });
+
+        board.addEventListener("pointermove", (event) => {
+            if (!penDown) return;
+            let point = position(event);
+            drawSegment(last, point, color, 3);
+            send({ type: "segment", from: last, to: point, color, width: 3 });
+            last = point;
+        });
+
+        for (let name of ["pointerup", "pointercancel"]) {
+            board.addEventListener(name, () => {
+                penDown = false;
+                last = null;
+            });
+        }
+
+        function pickColor(button) {
+            color = button.dataset.color;
+            for (let b of document.querySelectorAll(".swatches button[data-color]")) {
+                b.setAttribute("aria-pressed", String(b === button));
+            }
+        }
+
+        function clearBoard(tellOther = true) {
+            ctx.clearRect(0, 0, board.width, board.height);
+            if (tellOther) send({ type: "clear" });
+        }
+
+        /*
+            Events of the RTC connection. The data channel's `open` and `message` events carry the channel's label,
+            so a page with several channels can tell them apart.
+        */
+        function RTCCallback(e) {
+            console.log("RTC:", e);
+
+            switch (e.type) {
+                case "open":
+                    if (e.label === "drawing") {
+                        channel = e.target;
+                        document.getElementById("boardStatus").textContent = "Connected. Draw on the board.";
+                    }
+                    break;
+
+                case "message":
+                    if (e.label !== "drawing") break;
+                    try {
+                        let message = JSON.parse(e.data);
+                        if (message.type === "segment") drawSegment(message.from, message.to, message.color, message.width);
+                        else if (message.type === "clear") clearBoard(false);
+                    } catch (err) {
+                        console.error(err);
+                    }
+                    break;
+
+                case "track":
+                    // The other user's microphone, when voice is on.
+                    if (e.track.kind === "audio") {
+                        let audio = document.getElementById("remoteAudio");
+                        audio.srcObject = e.streams?.[0] || new MediaStream([e.track]);
+                        audio.play().catch((err) => console.error(err));
+                    }
+                    break;
+
+                case "connectionstatechange": {
+                    document.getElementById("el_dl_calling").close();
+                    document.getElementById("el_dl_incoming").close();
+
+                    let boardSection = document.getElementById("el_board");
+                    let userList = document.getElementById("el_dl_userlist");
+                    if (["disconnected", "failed", "closed"].includes(e.state)) {
+                        // Also when the other user rejected or left.
+                        boardSection.hidden = true;
+                        userList.hidden = false;
+                        clearBoard(false);
+                        document.getElementById("boardStatus").textContent = "";
+                        document.getElementById("remoteAudio").srcObject = null;
+                        channel = null;
+                        rtcConnection = null;
+                        call = null;
+                        receiver = null;
+                    } else if (["connecting", "connected"].includes(e.state)) {
+                        boardSection.hidden = false;
+                        userList.hidden = true;
+                        if (!channel) document.getElementById("boardStatus").textContent = "Connecting...";
+                    }
+                    break;
+                }
+            }
+        }
+
+        function leaveDrawing() {
+            if (rtcConnection?.hangup) {
+                rtcConnection.hangup();
+            } else if (call?.hangup) {
+                call.hangup();
+            } else {
+                receiver?.hangup?.();
+            }
+        }
+
+        /*
+            Invite a user by their connection id. The connection carries one ordered, reliable data channel
+            named "drawing", and the microphone when Voice is on. `meta` tells the other side what this is.
+        */
+        async function invite(cid) {
+            if (call || rtcConnection || receiver) {
+                alert("A drawing session is already active.");
+                return;
+            }
+
+            let voice = document.getElementById("allow_voice").checked;
+            call = await skapi.connectRTC({
+                cid,
+                media: { audio: voice },
+                channels: [{ protocol: "drawing", ordered: true }],
+                meta: { kind: "drawing" },
+            }, RTCCallback);
+
+            document.getElementById("drawingWith").textContent = displayName(participants[cidList[cid]]);
+            let dialog = document.getElementById("el_dl_calling");
+            if (!dialog.open) {
+                dialog.showModal();
+            }
+
+            rtcConnection = await call.connection;
+        }
+
+        async function acceptInvitation() {
+            if (!receiver) {
+                return;
+            }
+            try {
+                // The callee's own Voice box decides whether its microphone is added; the channel comes from the inviter.
+                let voice = document.getElementById("allow_voice").checked;
+                rtcConnection = await receiver.connectRTC({ media: { audio: voice } }, RTCCallback);
+                document.getElementById("el_dl_incoming").close();
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
+        function rejectInvitation() {
+            receiver?.hangup?.();
+            document.getElementById("el_dl_incoming").close();
+            receiver = null;
+        }
+
+        /*
+            The list of users who can be invited: everyone else in the realtime group.
+        */
+        function showParticipantMessage(message) {
+            let tbody = document.getElementById("RealtimeParticipants");
+            let row = document.createElement("tr");
+            row.dataset.state = "message";
+            let cell = document.createElement("td");
+            cell.colSpan = 3;
+            cell.textContent = message;
+            row.appendChild(cell);
+            tbody.replaceChildren(row);
+        }
+
+        function hasParticipantRows() {
+            return Boolean(document.querySelector("#RealtimeParticipants tr[id^='el_tr_participant-']"));
+        }
+
+        async function addUserRow(user_id, cid) {
+            if (!currentUser || user_id === currentUser.user_id) {
+                return;
+            }
+
+            let user = participants[user_id];
+            if (!user) {
+                try {
+                    user = (await skapi.getUsers({ searchFor: "user_id", value: user_id })).list?.[0];
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+            if (!user) {
+                return;
+            }
+            participants[user_id] = user;
+            cidList[cid] = user_id;
+
+            if (document.getElementById("el_tr_participant-" + cid)) {
+                return;
+            }
+
+            let tbody = document.getElementById("RealtimeParticipants");
+            tbody.querySelector("[data-state]")?.remove();
+
+            let row = document.createElement("tr");
+            row.id = "el_tr_participant-" + cid;
+            let nameCell = document.createElement("td");
+            nameCell.textContent = displayName(user);
+            let cidCell = document.createElement("td");
+            cidCell.textContent = cid;
+            let inviteCell = document.createElement("td");
+            let inviteButton = document.createElement("button");
+            inviteButton.type = "button";
+            inviteButton.textContent = "Invite";
+            inviteButton.onclick = () => invite(cid).catch((err) => alert(err.message));
+            inviteCell.appendChild(inviteButton);
+            row.append(nameCell, cidCell, inviteCell);
+            tbody.appendChild(row);
+        }
+
+        /*
+            Realtime messages: users joining and leaving the group, and incoming invitations.
+        */
+        function realtimeCallback(rt) {
+            console.log(rt);
+
+            if (rt.type === "notice") {
+                if (["USER_LEFT", "USER_DISCONNECTED"].includes(rt.code)) {
+                    document.getElementById("el_tr_participant-" + rt.sender_cid)?.remove();
+                    delete participants[rt.sender];
+                    delete cidList[rt.sender_cid];
+                    if (!hasParticipantRows()) {
+                        showParticipantMessage("No other user is online.");
+                    }
+                } else if (rt.code === "USER_JOINED") {
+                    addUserRow(rt.sender, rt.sender_cid).catch((err) => console.error(err));
+                }
+            }
+
+            if (rt.type === "rtc:closed" && receiver?.sender_cid === rt.sender_cid) {
+                // The inviter cancelled before this side answered.
+                document.getElementById("el_dl_incoming").close();
+                receiver = null;
+            }
+
+            if (rt.type === "rtc:incoming") {
+                // An invitation. rt.meta.kind says what it is; rt.sources tells whether the inviter sends voice.
+                receiver = rt;
+                document.getElementById("drawingWith").textContent = displayName(participants[rt.sender]);
+                document.getElementById("incomingFrom").textContent = displayName(participants[rt.sender]);
+                document.getElementById("incomingVoice").textContent = (rt.sources || []).includes("microphone") ? ", with voice" : "";
+                let dialog = document.getElementById("el_dl_incoming");
+                if (!dialog.open) {
+                    dialog.showModal();
+                }
+            }
+        }
+
+        async function getRealtimeUsers() {
+            let res = await skapi.getRealtimeUsers({ group: GROUP });
+            let others = res.list.filter((p) => p.user_id !== currentUser.user_id);
+            await Promise.all(others.map((p) => addUserRow(p.user_id, p.cid)));
+            if (!hasParticipantRows()) {
+                showParticipantMessage("No other user is online.");
+            }
+        }
+
+        // Connect once the user is known, join the group and list who is there.
+        userReady.then(async (user) => {
+            if (!user) {
+                return;
+            }
+            currentUser = user;
+            await skapi.connectRealtime(realtimeCallback);
+            await skapi.joinRealtime({ group: GROUP });
+            await getRealtimeUsers();
+        }).catch((err) => {
+            console.error(err);
+            alert(err.message);
+        });
+    </script>
+</body>
+
+</html>

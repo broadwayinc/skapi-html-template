@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Recover account | Skapi HTML Template</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+    <script src="service.js"></script>
+</head>
+
+<body>
+    <header>
+        <nav aria-label="Breadcrumb">
+            <ol>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="account.html">User Account</a></li>
+                <li aria-current="page">Recover account</li>
+            </ol>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Recover account</h1>
+        <p id="recoverStatus" role="status" aria-live="polite"></p>
+        <p>
+            A removed account can be recovered within 90 days. Log in with the account on the
+            <a href="login.html">login page</a>: the login fails with the error code <code>USER_IS_DISABLED</code>,
+            and the page then offers to send a recovery email with <code>skapi.recoverAccount()</code>.
+            The link in the email enables the account again.
+        </p>
+        <p>
+            The recovery email can only be sent to a verified email address.
+        </p>
+    </main>
+
+    <script>
+        // login.html opens this page with ?sent=1 right after the recovery email has been sent.
+        if (new URLSearchParams(location.search).get("sent")) {
+            document.getElementById("recoverStatus").textContent =
+                "A recovery email has been sent to your email address. Follow the instructions in it to recover your account. If you cannot find the email, check your spam folder.";
+        }
+    </script>
+</body>
+
+</html>
